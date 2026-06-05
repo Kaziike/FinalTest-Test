@@ -6,56 +6,48 @@ const path = require('path');
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-    maxHttpBufferSize: 1e8 // Even though we use WebRTC, keep this high just in case of large signaling payloads if any
+    maxHttpBufferSize: 1e8 
 });
 
-// Serve static files from the root directory
 app.use(express.static(path.join(__dirname, '..')));
 
-// Manage rooms based on Public IP
-// rooms[ip] = { socketId: { id, name, ip } }
-let rooms = {};
+// Since you are running this locally on your LAN, devices will have different local IPs (192.168.1.x)
+// Grouping strictly by IP isolates them. We will put everyone connecting to this server in the same group.
+let connectedUsers = {};
 
-function getPublicIP(socket) {
+function getDeviceIP(socket) {
     let ip = socket.handshake.headers['x-forwarded-for'] || socket.handshake.address;
-    if (ip.includes(',')) ip = ip.split(',')[0]; // Handle multiple proxies
+    if (ip.includes(',')) ip = ip.split(',')[0];
     if (ip.startsWith('::ffff:')) ip = ip.substring(7);
     if (ip === '::1') ip = '127.0.0.1';
     return ip.trim();
 }
 
 io.on('connection', (socket) => {
-    const ip = getPublicIP(socket);
+    const ip = getDeviceIP(socket);
     console.log(`Thiết bị kết nối: ${socket.id} từ IP: ${ip}`);
     
-    // Assign IP as default name (can be changed later)
+    // Tên mặc định là IP
     const userName = ip;
     
-    if (!rooms[ip]) {
-        rooms[ip] = {};
-    }
-    
-    rooms[ip][socket.id] = { id: socket.id, name: userName, ip: ip };
-    socket.join(ip); // Join the IP-based room
+    connectedUsers[socket.id] = { id: socket.id, name: userName, ip: ip };
 
-    // Send current user their info
-    socket.emit('your info', rooms[ip][socket.id]);
+    // Gửi thông tin cá nhân
+    socket.emit('your info', connectedUsers[socket.id]);
     
-    // Broadcast updated user list to everyone in the SAME ROOM
-    io.to(ip).emit('user list', Object.values(rooms[ip]));
+    // Phát danh sách toàn bộ thiết bị đang kết nối tới server
+    io.emit('user list', Object.values(connectedUsers));
 
-    // Handle rename
+    // Đổi tên
     socket.on('change name', (newName) => {
-        if (rooms[ip][socket.id]) {
-            rooms[ip][socket.id].name = newName;
-            io.to(ip).emit('user list', Object.values(rooms[ip]));
-            socket.emit('your info', rooms[ip][socket.id]);
+        if (connectedUsers[socket.id]) {
+            connectedUsers[socket.id].name = newName;
+            io.emit('user list', Object.values(connectedUsers));
+            socket.emit('your info', connectedUsers[socket.id]);
         }
     });
 
     // --- WebRTC Signaling ---
-    
-    // 1. Offer
     socket.on('webrtc_offer', (data) => {
         io.to(data.target).emit('webrtc_offer', {
             sender: socket.id,
@@ -63,7 +55,6 @@ io.on('connection', (socket) => {
         });
     });
 
-    // 2. Answer
     socket.on('webrtc_answer', (data) => {
         io.to(data.target).emit('webrtc_answer', {
             sender: socket.id,
@@ -71,7 +62,6 @@ io.on('connection', (socket) => {
         });
     });
 
-    // 3. ICE Candidate
     socket.on('webrtc_ice_candidate', (data) => {
         io.to(data.target).emit('webrtc_ice_candidate', {
             sender: socket.id,
@@ -81,15 +71,9 @@ io.on('connection', (socket) => {
 
     socket.on('disconnect', () => {
         console.log(`Thiết bị ngắt kết nối: ${socket.id}`);
-        if (rooms[ip]) {
-            delete rooms[ip][socket.id];
-            // Broadcast updated list
-            io.to(ip).emit('user list', Object.values(rooms[ip]));
-            
-            // Cleanup empty rooms
-            if (Object.keys(rooms[ip]).length === 0) {
-                delete rooms[ip];
-            }
+        if (connectedUsers[socket.id]) {
+            delete connectedUsers[socket.id];
+            io.emit('user list', Object.values(connectedUsers));
         }
     });
 });

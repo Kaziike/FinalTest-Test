@@ -1,0 +1,27 @@
+{
+  "name": "fimaltest",
+  "version": "1.0.0",
+  "description": "Đây là thư mục dự án kết thúc môn của sinh viên. Dự án được tổ chức theo cấu trúc rõ ràng nhằm phục vụ quá trình phát triển website, quản lý mã nguồn và nộp sản phẩm cuối kỳ.",
+  "main": "server.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/TKW-22526/Final-test-the-individual-project.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/TKW-22526/Final-test-the-individual-project/issues"
+  },
+  "homepage": "https://github.com/TKW-22526/Final-test-the-individual-project#readme",
+  "dependencies": {
+    "express": "^5.2.1",
+    "multer": "^2.1.1",
+    "socket.io": "^4.8.3"
+  }
+}

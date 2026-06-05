@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="vi">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat Nội Bộ Wi-Fi</title>
+    <link rel="stylesheet" href="css/style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/@phosphor-icons/web"></script>
+</head>
+
+<body>
+    <div class="app-container">
+        <!-- Sidebar: Chat List -->
+        <aside class="sidebar">
+            <div class="sidebar-header">
+                <h2>Tin nhắn</h2>
+            </div>
+            <div class="search-bar">
+                <div class="search-input-container">
+                    <i class="ph ph-magnifying-glass"></i>
+                    <input type="text" id="user-search-input" placeholder="Tìm kiếm người dùng...">
+                </div>
+            </div>
+            <div class="chat-list" id="chat-list">
+                <!-- Group Chat Item -->
+                <div class="chat-item active" data-id="general" id="chat-general">
+                    <div class="avatar group-avatar">
+                        <i class="ph-fill ph-users-three"></i>
+                    </div>
+                    <div class="chat-info">
+                        <div class="chat-name-row">
+                            <span class="chat-name">Nhóm chung nội bộ</span>
+                            <span class="chat-time"></span>
+                        </div>
+                        <div class="chat-last-msg-row">
+                            <span class="chat-last-msg"></span>
+                        </div>
+                    </div>
+                </div>
+                <!-- Dynamic user list will go here -->
+            </div>
+            <!-- My Profile area at bottom of sidebar for renaming -->
+            <div class="my-profile-area">
+                <div class="avatar my-avatar">
+                    <i class="ph-fill ph-user"></i>
+                </div>
+                <div class="my-info">
+                    <span class="my-name" id="my-display-name">Đang tải...</span>
+                    <button class="icon-btn" id="rename-btn" title="Đổi tên"><i
+                            class="ph ph-pencil-simple"></i></button>
+                </div>
+            </div>
+        </aside>
+
+        <!-- Main Chat Area -->
+        <main class="chat-area">
+            <header class="chat-header">
+                <div class="chat-header-info">
+                    <div class="avatar" id="current-chat-avatar">
+                        <i class="ph-fill ph-users-three"></i>
+                    </div>
+                    <div class="chat-header-text">
+                        <h3 id="current-chat-name">Nhóm chung nội bộ</h3>
+                    </div>
+                </div>
+                <div class="chat-header-actions">
+                    <div class="message-search-container" id="message-search-container" style="display: none;">
+                        <input type="text" id="message-search-input" placeholder="Tìm tin nhắn...">
+                        <button class="icon-btn" id="close-msg-search-btn"><i class="ph ph-x"></i></button>
+                    </div>
+                    <button class="icon-btn" id="toggle-msg-search-btn"><i class="ph ph-magnifying-glass"></i></button>
+                </div>
+            </header>
+
+            <div class="pinned-message" id="pinned-message-container">
+                <div class="pinned-icon"><i class="ph-fill ph-push-pin"></i></div>
+                <div class="pinned-content">
+                    <div class="pinned-title">Tin nhắn ghim</div>
+                    <div class="pinned-text">Hệ thống: Kênh trao đổi nội bộ qua Wi-Fi đã sẵn sàng!</div>
+                </div>
+                <button class="icon-btn"><i class="ph ph-caret-down"></i></button>
+            </div>
+
+            <div class="messages-container" id="messages-container">
+                <div class="date-divider"><span>Hôm nay</span></div>
+                <!-- Messages go here -->
+            </div>
+
+            <footer class="chat-input-area">
+                <div class="input-toolbar">
+                    <button class="icon-btn" id="attach-btn" title="Gửi file"><i class="ph ph-paperclip"></i></button>
+                    <div class="toolbar-spacer"></div>
+                    <input type="file" id="file-input" style="display: none;">
+                </div>
+                <form id="chat-form" class="input-form">
+                    <div class="input-wrapper">
+                        <input type="text" id="message-input" placeholder="Nhập tin nhắn..." autocomplete="off">
+                    </div>
+                    <button type="submit" class="send-btn" id="send-btn"><i
+                            class="ph-fill ph-paper-plane-right"></i></button>
+                </form>
+            </footer>
+        </main>
+    </div>
+
+    <!-- Rename Modal -->
+    <div id="rename-modal" class="modal">
+        <div class="modal-content">
+            <h3>Đổi tên hiển thị</h3>
+            <input type="text" id="new-name-input" placeholder="Nhập tên mới">
+            <div class="modal-actions">
+                <button id="cancel-rename-btn" class="btn btn-secondary">Hủy</button>
+                <button id="save-rename-btn" class="btn btn-primary">Lưu</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/socket.io/socket.io.js"></script>
+    <script src="js/client.js"></script>
+</body>
+
+</html>

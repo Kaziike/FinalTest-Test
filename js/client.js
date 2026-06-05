@@ -161,7 +161,7 @@ function setupDataChannel(dc, targetId) {
         delete peerConnections[targetId];
     };
     
-    dc.onmessage = (event) => {
+    dc.onmessage = async (event) => {
         const data = JSON.parse(event.data);
         const senderInfo = users.find(u => u.id === targetId);
         if (!senderInfo) return;
@@ -189,38 +189,37 @@ function setupDataChannel(dc, targetId) {
             const fileData = receivingFiles[data.fileId];
             if (fileData) {
                 fileData.chunks.push(data.chunk);
-                fileData.received += data.chunk.length; // Approximate
+                fileData.received += data.chunk.length;
             }
         }
         else if (data.type === 'file-end') {
             const fileData = receivingFiles[data.fileId];
             if (fileData) {
-                // Assemble base64 chunks
-                const base64Data = fileData.chunks.join('');
-                
-                // Convert base64 to Blob
-                const byteCharacters = atob(base64Data);
-                const byteNumbers = new Array(byteCharacters.length);
-                for (let i = 0; i < byteCharacters.length; i++) {
-                    byteNumbers[i] = byteCharacters.charCodeAt(i);
+                try {
+                    // Assemble base64 chunks
+                    const base64Data = fileData.chunks.join('');
+                    
+                    // Natively convert base64 to Blob using Fetch API (very efficient)
+                    const response = await fetch(`data:application/octet-stream;base64,${base64Data}`);
+                    const blob = await response.blob();
+                    
+                    // Create local URL
+                    const fileUrl = URL.createObjectURL(blob);
+                    
+                    handleIncomingMessage({
+                        from: senderInfo,
+                        to: fileData.to,
+                        content: '',
+                        isFile: true,
+                        fileName: fileData.name,
+                        fileUrl: fileUrl,
+                        timestamp: fileData.timestamp
+                    });
+                } catch (e) {
+                    console.error("Lỗi khi giải nén file:", e);
+                } finally {
+                    delete receivingFiles[data.fileId];
                 }
-                const byteArray = new Uint8Array(byteNumbers);
-                const blob = new Blob([byteArray]);
-                
-                // Create local URL
-                const fileUrl = URL.createObjectURL(blob);
-                
-                handleIncomingMessage({
-                    from: senderInfo,
-                    to: fileData.to,
-                    content: '',
-                    isFile: true,
-                    fileName: fileData.name,
-                    fileUrl: fileUrl,
-                    timestamp: fileData.timestamp
-                });
-                
-                delete receivingFiles[data.fileId];
             }
         }
     };
@@ -275,61 +274,56 @@ async function sendFile(file, toChat) {
         timestamp: timestamp
     });
 
-    // 2. Read and send chunks
-    const chunkSize = 16384; // 16KB per chunk
-    let offset = 0;
-    
     const reader = new FileReader();
-    
-    const readChunk = () => {
-        const slice = file.slice(offset, offset + chunkSize);
-        reader.readAsDataURL(slice);
-    };
-
-    reader.onload = (e) => {
-        // e.target.result is a Data URL: data:application/octet-stream;base64,....
-        // We only want the base64 part
-        const base64Chunk = e.target.result.split(',')[1];
+    reader.onload = async (e) => {
+        // Lấy chuỗi base64 của toàn bộ file
+        const base64String = e.target.result.split(',')[1];
         
-        sendViaWebRTC({
-            type: 'file-chunk',
-            fileId: fileId,
-            chunk: base64Chunk
-        });
-        
-        offset += chunkSize;
-        if (offset < file.size) {
-            readChunk();
-        } else {
-            // 3. Notify end
+        // 2. Cắt chuỗi base64 thành các mảnh nhỏ và gửi
+        const chunkSize = 16384; // 16KB
+        for (let i = 0; i < base64String.length; i += chunkSize) {
+            const chunk = base64String.slice(i, i + chunkSize);
             sendViaWebRTC({
-                type: 'file-end',
-                fileId: fileId
+                type: 'file-chunk',
+                fileId: fileId,
+                chunk: chunk
             });
             
-            // Add to own history to show it locally
-            const fileUrl = URL.createObjectURL(file);
-            const msg = {
-                from: myInfo,
-                to: toChat,
-                content: '',
-                isFile: true,
-                fileName: file.name,
-                fileUrl: fileUrl,
-                timestamp: timestamp
-            };
-            if (!chatHistory[toChat]) chatHistory[toChat] = [];
-            chatHistory[toChat].push(msg);
-            
-            if (currentActiveChat === toChat) {
-                renderMessage(msg);
-                scrollToBottom();
+            // Chống đầy bộ nhớ đệm (buffer overflow) của WebRTC với file lớn
+            if (i % (chunkSize * 20) === 0) {
+                await new Promise(r => setTimeout(r, 5)); 
             }
-            updateSidebar();
         }
+        
+        // 3. Notify end
+        sendViaWebRTC({
+            type: 'file-end',
+            fileId: fileId
+        });
+        
+        // Thêm vào giao diện máy gửi
+        const fileUrl = URL.createObjectURL(file);
+        const msg = {
+            from: myInfo,
+            to: toChat,
+            content: '',
+            isFile: true,
+            fileName: file.name,
+            fileUrl: fileUrl,
+            timestamp: timestamp
+        };
+        if (!chatHistory[toChat]) chatHistory[toChat] = [];
+        chatHistory[toChat].push(msg);
+        
+        if (currentActiveChat === toChat) {
+            renderMessage(msg);
+            scrollToBottom();
+        }
+        updateSidebar();
     };
     
-    readChunk();
+    // Đọc toàn bộ file thành chuỗi DataURL (Base64)
+    reader.readAsDataURL(file);
 }
 
 

@@ -5,7 +5,9 @@
   "main": "server.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "node server.js"
+    "start": "node server.js",
+    "predeploy": "npm run build",
+    "deploy": "gh-pages -d build"
   },
   "repository": {
     "type": "git",
@@ -18,10 +20,13 @@
   "bugs": {
     "url": "https://github.com/TKW-22526/Final-test-the-individual-project/issues"
   },
-  "homepage": "https://github.com/TKW-22526/Final-test-the-individual-project#readme",
+  "homepage": "https://kaziike.github.io/FinalTest-Test/",
   "dependencies": {
     "express": "^5.2.1",
     "multer": "^2.1.1",
     "socket.io": "^4.8.3"
+  },
+  "devDependencies": {
+    "gh-pages": "^6.3.0"
   }
 }

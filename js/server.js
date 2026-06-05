@@ -1,109 +1,97 @@
 const express = require('express');
 const http = require('http');
 const { Server } = require('socket.io');
-const multer = require('multer');
 const path = require('path');
-const fs = require('fs');
 
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
-    maxHttpBufferSize: 1e8 // 100 MB max for socket transfers
+    maxHttpBufferSize: 1e8 // Even though we use WebRTC, keep this high just in case of large signaling payloads if any
 });
-
-// Create uploads directory if it doesn't exist
-const uploadsDir = path.join(__dirname, '..', 'uploads');
-if (!fs.existsSync(uploadsDir)) {
-    fs.mkdirSync(uploadsDir);
-}
-
-// Multer config for file uploads
-const storage = multer.diskStorage({
-    destination: function (req, file, cb) {
-        cb(null, uploadsDir);
-    },
-    filename: function (req, file, cb) {
-        const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-        cb(null, uniqueSuffix + '-' + file.originalname);
-    }
-});
-const upload = multer({ storage: storage });
 
 // Serve static files from the root directory
 app.use(express.static(path.join(__dirname, '..')));
-app.use('/uploads', express.static(uploadsDir));
 
-let connectedUsers = {};
+// Manage rooms based on Public IP
+// rooms[ip] = { socketId: { id, name, ip } }
+let rooms = {};
+
+function getPublicIP(socket) {
+    let ip = socket.handshake.headers['x-forwarded-for'] || socket.handshake.address;
+    if (ip.includes(',')) ip = ip.split(',')[0]; // Handle multiple proxies
+    if (ip.startsWith('::ffff:')) ip = ip.substring(7);
+    if (ip === '::1') ip = '127.0.0.1';
+    return ip.trim();
+}
 
 io.on('connection', (socket) => {
-    console.log(`Thiết bị kết nối: ${socket.id}`);
+    const ip = getPublicIP(socket);
+    console.log(`Thiết bị kết nối: ${socket.id} từ IP: ${ip}`);
     
-    // Get IP Address
-    let ip = socket.handshake.address;
-    if (ip.startsWith('::ffff:')) {
-        ip = ip.substring(7);
-    }
-    if (ip === '::1') ip = '127.0.0.1';
-
-    // Assign IP as default name
+    // Assign IP as default name (can be changed later)
     const userName = ip;
-    connectedUsers[socket.id] = { id: socket.id, name: userName };
+    
+    if (!rooms[ip]) {
+        rooms[ip] = {};
+    }
+    
+    rooms[ip][socket.id] = { id: socket.id, name: userName, ip: ip };
+    socket.join(ip); // Join the IP-based room
 
     // Send current user their info
-    socket.emit('your info', connectedUsers[socket.id]);
+    socket.emit('your info', rooms[ip][socket.id]);
     
-    // Broadcast updated user list to everyone
-    io.emit('user list', Object.values(connectedUsers));
+    // Broadcast updated user list to everyone in the SAME ROOM
+    io.to(ip).emit('user list', Object.values(rooms[ip]));
 
     // Handle rename
     socket.on('change name', (newName) => {
-        if (connectedUsers[socket.id]) {
-            connectedUsers[socket.id].name = newName;
-            io.emit('user list', Object.values(connectedUsers));
-            socket.emit('your info', connectedUsers[socket.id]);
+        if (rooms[ip][socket.id]) {
+            rooms[ip][socket.id].name = newName;
+            io.to(ip).emit('user list', Object.values(rooms[ip]));
+            socket.emit('your info', rooms[ip][socket.id]);
         }
     });
 
-    // Handle incoming messages
-    socket.on('chat message', (data) => {
-        const { to, content, isFile, fileName, fileUrl } = data;
-        const senderInfo = connectedUsers[socket.id];
+    // --- WebRTC Signaling ---
+    
+    // 1. Offer
+    socket.on('webrtc_offer', (data) => {
+        io.to(data.target).emit('webrtc_offer', {
+            sender: socket.id,
+            offer: data.offer
+        });
+    });
 
-        const messageData = {
-            from: senderInfo,
-            content: content,
-            isFile: isFile,
-            fileName: fileName,
-            fileUrl: fileUrl,
-            timestamp: new Date().toISOString()
-        };
+    // 2. Answer
+    socket.on('webrtc_answer', (data) => {
+        io.to(data.target).emit('webrtc_answer', {
+            sender: socket.id,
+            answer: data.answer
+        });
+    });
 
-        if (to === 'general') {
-            // Broadcast to everyone
-            io.emit('chat message', { ...messageData, to: 'general' });
-        } else {
-            // Direct message
-            if (connectedUsers[to]) {
-                io.to(to).emit('chat message', { ...messageData, to: socket.id }); // send to recipient
-                socket.emit('chat message', { ...messageData, to: to }); // echo back to sender
-            }
-        }
+    // 3. ICE Candidate
+    socket.on('webrtc_ice_candidate', (data) => {
+        io.to(data.target).emit('webrtc_ice_candidate', {
+            sender: socket.id,
+            candidate: data.candidate
+        });
     });
 
     socket.on('disconnect', () => {
         console.log(`Thiết bị ngắt kết nối: ${socket.id}`);
-        delete connectedUsers[socket.id];
-        io.emit('user list', Object.values(connectedUsers));
+        if (rooms[ip]) {
+            delete rooms[ip][socket.id];
+            // Broadcast updated list
+            io.to(ip).emit('user list', Object.values(rooms[ip]));
+            
+            // Cleanup empty rooms
+            if (Object.keys(rooms[ip]).length === 0) {
+                delete rooms[ip];
+            }
+        }
     });
-});
-
-// Endpoint for file uploads
-app.post('/upload', upload.single('file'), (req, res) => {
-    if (!req.file) {
-        return res.status(400).send('No file uploaded.');
-    }
-    // Return the URL to access the file
-    res.json({ url: `/uploads/${req.file.filename}`, fileName: req.file.originalname, size: req.file.size });
 });
 
 server.listen(3000, '0.0.0.0', () => {

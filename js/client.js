@@ -34,13 +34,27 @@ let chatHistory = {
 };
 let msgSearchQuery = '';
 
+// --- WebRTC State ---
+const peerConnections = {}; // targetId -> RTCPeerConnection
+const dataChannels = {};    // targetId -> RTCDataChannel
+const rtcConfig = {
+    iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' }
+    ]
+};
+
 // --- Formatters ---
 function formatTime(isoString) {
     const date = new Date(isoString);
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
-// --- Socket Events ---
+function generateId() {
+    return Math.random().toString(36).substring(2, 9);
+}
+
+// --- Socket Events (Signaling) ---
 socket.on('your info', (info) => {
     myInfo = info;
     myDisplayName.textContent = info.name;
@@ -50,15 +64,170 @@ socket.on('user list', (userList) => {
     users = userList;
     updateSidebar();
     updateChatHeader();
+    
+    // WebRTC: Connect to new users
+    if (myInfo) {
+        users.forEach(user => {
+            if (user.id !== myInfo.id && !peerConnections[user.id]) {
+                // To avoid glare (both sides creating offer), only the one with 'larger' ID creates the offer
+                if (myInfo.id > user.id) {
+                    createPeerConnection(user.id, true);
+                } else {
+                    createPeerConnection(user.id, false);
+                }
+            }
+        });
+    }
 });
 
-socket.on('chat message', (msg) => {
-    let targetChat = '';
-    if (msg.to === 'general') {
-        targetChat = 'general';
-    } else {
-        targetChat = msg.from.id === myInfo.id ? msg.to : msg.from.id;
+// 1. Receive Offer
+socket.on('webrtc_offer', async (data) => {
+    const pc = peerConnections[data.sender];
+    if (pc) {
+        await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        socket.emit('webrtc_answer', { target: data.sender, answer: answer });
     }
+});
+
+// 2. Receive Answer
+socket.on('webrtc_answer', async (data) => {
+    const pc = peerConnections[data.sender];
+    if (pc) {
+        await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+    }
+});
+
+// 3. Receive ICE Candidate
+socket.on('webrtc_ice_candidate', async (data) => {
+    const pc = peerConnections[data.sender];
+    if (pc) {
+        try {
+            await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+        } catch (e) {
+            console.error('Error adding received ice candidate', e);
+        }
+    }
+});
+
+// --- WebRTC Setup ---
+function createPeerConnection(targetId, isInitiator) {
+    const pc = new RTCPeerConnection(rtcConfig);
+    peerConnections[targetId] = pc;
+
+    // Send ICE candidates to the other peer
+    pc.onicecandidate = (event) => {
+        if (event.candidate) {
+            socket.emit('webrtc_ice_candidate', {
+                target: targetId,
+                candidate: event.candidate
+            });
+        }
+    };
+
+    if (isInitiator) {
+        // Create Data Channel
+        const dc = pc.createDataChannel('chat');
+        setupDataChannel(dc, targetId);
+
+        // Create Offer
+        pc.createOffer().then(offer => {
+            return pc.setLocalDescription(offer);
+        }).then(() => {
+            socket.emit('webrtc_offer', {
+                target: targetId,
+                offer: pc.localDescription
+            });
+        }).catch(e => console.error("Create offer error", e));
+    } else {
+        // Wait for Data Channel from the other side
+        pc.ondatachannel = (event) => {
+            setupDataChannel(event.channel, targetId);
+        };
+    }
+}
+
+// File receiving state
+let receivingFiles = {}; // fileId -> { chunks: [], name: '', size: 0, received: 0 }
+
+function setupDataChannel(dc, targetId) {
+    dataChannels[targetId] = dc;
+    
+    dc.onopen = () => console.log(`DataChannel opened with ${targetId}`);
+    dc.onclose = () => {
+        console.log(`DataChannel closed with ${targetId}`);
+        delete dataChannels[targetId];
+        delete peerConnections[targetId];
+    };
+    
+    dc.onmessage = (event) => {
+        const data = JSON.parse(event.data);
+        const senderInfo = users.find(u => u.id === targetId);
+        if (!senderInfo) return;
+
+        if (data.type === 'text') {
+            handleIncomingMessage({
+                from: senderInfo,
+                to: data.to,
+                content: data.content,
+                isFile: false,
+                timestamp: data.timestamp
+            });
+        } 
+        else if (data.type === 'file-start') {
+            receivingFiles[data.fileId] = {
+                name: data.fileName,
+                size: data.size,
+                chunks: [],
+                received: 0,
+                to: data.to,
+                timestamp: data.timestamp
+            };
+        }
+        else if (data.type === 'file-chunk') {
+            const fileData = receivingFiles[data.fileId];
+            if (fileData) {
+                fileData.chunks.push(data.chunk);
+                fileData.received += data.chunk.length; // Approximate
+            }
+        }
+        else if (data.type === 'file-end') {
+            const fileData = receivingFiles[data.fileId];
+            if (fileData) {
+                // Assemble base64 chunks
+                const base64Data = fileData.chunks.join('');
+                
+                // Convert base64 to Blob
+                const byteCharacters = atob(base64Data);
+                const byteNumbers = new Array(byteCharacters.length);
+                for (let i = 0; i < byteCharacters.length; i++) {
+                    byteNumbers[i] = byteCharacters.charCodeAt(i);
+                }
+                const byteArray = new Uint8Array(byteNumbers);
+                const blob = new Blob([byteArray]);
+                
+                // Create local URL
+                const fileUrl = URL.createObjectURL(blob);
+                
+                handleIncomingMessage({
+                    from: senderInfo,
+                    to: fileData.to,
+                    content: '',
+                    isFile: true,
+                    fileName: fileData.name,
+                    fileUrl: fileUrl,
+                    timestamp: fileData.timestamp
+                });
+                
+                delete receivingFiles[data.fileId];
+            }
+        }
+    };
+}
+
+function handleIncomingMessage(msg) {
+    let targetChat = msg.to === 'general' ? 'general' : msg.from.id;
 
     if (!chatHistory[targetChat]) {
         chatHistory[targetChat] = [];
@@ -69,16 +238,106 @@ socket.on('chat message', (msg) => {
         renderMessage(msg);
         scrollToBottom();
     }
-
     updateSidebar();
-});
+}
+
+function sendViaWebRTC(payload) {
+    const payloadStr = JSON.stringify(payload);
+    
+    if (payload.to === 'general') {
+        // Send to everyone
+        Object.values(dataChannels).forEach(dc => {
+            if (dc.readyState === 'open') {
+                dc.send(payloadStr);
+            }
+        });
+    } else {
+        // Direct message
+        const dc = dataChannels[payload.to];
+        if (dc && dc.readyState === 'open') {
+            dc.send(payloadStr);
+        }
+    }
+}
+
+// --- File Sending Logic (Chunking) ---
+async function sendFile(file, toChat) {
+    const fileId = generateId();
+    const timestamp = new Date().toISOString();
+    
+    // 1. Notify start
+    sendViaWebRTC({
+        type: 'file-start',
+        fileId: fileId,
+        fileName: file.name,
+        size: file.size,
+        to: toChat,
+        timestamp: timestamp
+    });
+
+    // 2. Read and send chunks
+    const chunkSize = 16384; // 16KB per chunk
+    let offset = 0;
+    
+    const reader = new FileReader();
+    
+    const readChunk = () => {
+        const slice = file.slice(offset, offset + chunkSize);
+        reader.readAsDataURL(slice);
+    };
+
+    reader.onload = (e) => {
+        // e.target.result is a Data URL: data:application/octet-stream;base64,....
+        // We only want the base64 part
+        const base64Chunk = e.target.result.split(',')[1];
+        
+        sendViaWebRTC({
+            type: 'file-chunk',
+            fileId: fileId,
+            chunk: base64Chunk
+        });
+        
+        offset += chunkSize;
+        if (offset < file.size) {
+            readChunk();
+        } else {
+            // 3. Notify end
+            sendViaWebRTC({
+                type: 'file-end',
+                fileId: fileId
+            });
+            
+            // Add to own history to show it locally
+            const fileUrl = URL.createObjectURL(file);
+            const msg = {
+                from: myInfo,
+                to: toChat,
+                content: '',
+                isFile: true,
+                fileName: file.name,
+                fileUrl: fileUrl,
+                timestamp: timestamp
+            };
+            if (!chatHistory[toChat]) chatHistory[toChat] = [];
+            chatHistory[toChat].push(msg);
+            
+            if (currentActiveChat === toChat) {
+                renderMessage(msg);
+                scrollToBottom();
+            }
+            updateSidebar();
+        }
+    };
+    
+    readChunk();
+}
+
 
 // --- UI Updates ---
 function updateSidebar() {
     const query = userSearchInput.value.toLowerCase();
-    
     let html = '';
-    // Always show general if it matches search (or search is empty)
+    
     if ("nhóm chung nội bộ".includes(query) || query === "") {
         html += `
             <div class="chat-item ${currentActiveChat === 'general' ? 'active' : ''}" data-id="general" id="chat-general" onclick="switchChat('general')">
@@ -167,7 +426,6 @@ function getLastMessagePreview(chatId) {
 window.switchChat = function(chatId) {
     currentActiveChat = chatId;
     
-    // Clear search when switching chats
     msgSearchQuery = '';
     messageSearchInput.value = '';
     messageSearchContainer.style.display = 'none';
@@ -183,7 +441,6 @@ function renderChatHistory() {
     
     const history = chatHistory[currentActiveChat] || [];
     history.forEach(msg => {
-        // If we have a search query, check if content matches
         if (msgSearchQuery && !msg.isFile) {
             if (msg.content.toLowerCase().includes(msgSearchQuery)) {
                 renderMessage(msg, true);
@@ -203,11 +460,11 @@ function renderMessage(msg, isHighlighted = false) {
     let contentHtml = '';
     if (msg.isFile) {
         contentHtml = `
-            <a href="${msg.fileUrl}" target="_blank" class="msg-file">
+            <a href="${msg.fileUrl}" target="_blank" download="${msg.fileName}" class="msg-file">
                 <i class="ph-fill ph-file-doc"></i>
                 <div class="file-info">
                     <span class="file-name">${msg.fileName}</span>
-                    <span class="file-size">Tải xuống</span>
+                    <span class="file-size">Tải xuống (Lưu cục bộ)</span>
                 </div>
             </a>
         `;
@@ -240,11 +497,32 @@ chatForm.addEventListener('submit', (e) => {
     e.preventDefault();
     const content = messageInput.value.trim();
     if (content) {
-        socket.emit('chat message', {
+        const timestamp = new Date().toISOString();
+        const payload = {
+            type: 'text',
             to: currentActiveChat,
             content: content,
-            isFile: false
-        });
+            timestamp: timestamp
+        };
+        
+        // Send via P2P
+        sendViaWebRTC(payload);
+
+        // Add to own history
+        const msg = {
+            from: myInfo,
+            to: currentActiveChat,
+            content: content,
+            isFile: false,
+            timestamp: timestamp
+        };
+        if (!chatHistory[currentActiveChat]) chatHistory[currentActiveChat] = [];
+        chatHistory[currentActiveChat].push(msg);
+        
+        renderMessage(msg);
+        scrollToBottom();
+        updateSidebar();
+        
         messageInput.value = '';
     }
 });
@@ -262,35 +540,12 @@ fileInput.addEventListener('change', async (e) => {
     attachBtn.innerHTML = '<div class="spinner"></div>';
     attachBtn.disabled = true;
 
-    const formData = new FormData();
-    formData.append('file', file);
-
-    try {
-        const response = await fetch('/upload', {
-            method: 'POST',
-            body: formData
-        });
-        
-        if (response.ok) {
-            const result = await response.json();
-            socket.emit('chat message', {
-                to: currentActiveChat,
-                content: '',
-                isFile: true,
-                fileName: result.fileName,
-                fileUrl: result.url
-            });
-        } else {
-            alert('Lỗi khi tải file lên!');
-        }
-    } catch (error) {
-        console.error('Upload error:', error);
-        alert('Lỗi kết nối khi tải file!');
-    } finally {
-        fileInput.value = '';
-        attachBtn.innerHTML = btnIcon;
-        attachBtn.disabled = false;
-    }
+    // Send the file over P2P DataChannels
+    await sendFile(file, currentActiveChat);
+    
+    fileInput.value = '';
+    attachBtn.innerHTML = btnIcon;
+    attachBtn.disabled = false;
 });
 
 // Rename logic
